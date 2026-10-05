@@ -1,0 +1,116 @@
+<?php
+session_start();
+// ========== CONFIG - YOUR DEPOSIT ACCOUNT ==========
+$host = "localhost"; $db_user = "root"; $db_pass = ""; $db_name = "invest_system";
+$conn = new mysqli($host, $db_user, $db_name);
+define('YOUR_PHONE', '254758966825'); // 0758966825 - All deposits go here
+define('MPESA_SHORTCODE', '174379'); // Change to your real Till later
+define('MPESA_PASSKEY', 'bfb279f9aa9bdbcf158e97dd71a467cd2e0c893059b10f78e6b72ada1ed2c919');
+define('MPESA_CONSUMER_KEY', 'YOUR_CONSUMER_KEY');
+define('MPESA_CONSUMER_SECRET', 'YOUR_CONSUMER_SECRET');
+
+function getAccessToken(){
+    $url = 'https://sandbox.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials';
+    $credentials = base64_encode(MPESA_CONSUMER_KEY.':'.MPESA_CONSUMER_SECRET);
+    $ch = curl_init($url);
+    curl_setopt($ch, CURLOPT_HTTPHEADER, ['Authorization: Basic '.$credentials]);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
+    $res = json_decode(curl_exec($ch));
+    return $res->access_token ?? '';
+}
+
+// ========== PRODUCTS WITH YOUR PRICES & NAMES ==========
+$my_products = [
+  1 => ['name'=>'Carrots', 'price'=>800, 'profit'=>45],
+  2 => ['name'=>'Cabbage', 'price'=>1200, 'profit'=>100],
+  3 => ['name'=>'Kales', 'price'=>1800, 'profit'=>180],
+  4 => ['name'=>'Managu', 'price'=>2000, 'profit'=>320],
+  5 => ['name'=>'Sagaa', 'price'=>4000, 'profit'=>700],
+  6 => ['name'=>'Mboga', 'price'=>10000, 'profit'=>1850],
+  7 => ['name'=>'Dania', 'price'=>200000, 'profit'=>40000],
+];
+
+// ========== ROUTING ==========
+$action = $_GET['action'] ?? 'home';
+
+// REGISTER
+if(isset($_POST['do_register'])){
+  $name = $_POST['name']; $phone = $_POST['phone']; $pass = password_hash($_POST['password'], PASSWORD_DEFAULT);
+  $conn->query("INSERT INTO users (name, phone, password) VALUES ('$name','$phone','$pass')");
+  echo "<script>alert('Registered! Login now'); location.href='?action=home';</script>"; exit;
+}
+// LOGIN
+if(isset($_POST['do_login'])){
+  $phone = $_POST['phone']; $p = $conn->query("SELECT * FROM users WHERE phone='$phone'")->fetch_assoc();
+  if($p && password_verify($_POST['password'], $p['password'])){ $_SESSION['user_id']=$p['id']; header("Location: ?action=dashboard"); exit; }
+  else { $error="Wrong phone or password"; }
+}
+// STK PUSH - DEPOSIT TO 0758966825
+if(isset($_POST['do_deposit'])){
+  $phone = $_POST['phone']; $amount = $_POST['amount']; $uid = $_SESSION['user_id'];
+  $token = getAccessToken();
+  $url = 'https://sandbox.safaricom.co.ke/mpesa/stkpush/v1/processrequest';
+  $timestamp = date('YmdHis'); $password = base64_encode(MPESA_SHORTCODE.MPESA_PASSKEY.$timestamp);
+  $data = ['BusinessShortCode'=>MPESA_SHORTCODE,'Password'=>$password,'Timestamp'=>$timestamp,'TransactionType'=>'CustomerPayBillOnline','Amount'=>$amount,'PartyA'=>$phone,'PartyB'=>MPESA_SHORTCODE,'PhoneNumber'=>$phone,'CallBackURL'=>'https://yourdomain.com/?action=callback','AccountReference'=>'0758966825','TransactionDesc'=>'Deposit'];
+  $ch = curl_init($url); curl_setopt($ch, CURLOPT_HTTPHEADER, ['Authorization: Bearer '.$token, 'Content-Type: application/json']); curl_setopt($ch, CURLOPT_POST, 1); curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($data)); curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1); $resp = curl_exec($ch);
+  $conn->query("INSERT INTO transactions (user_id, type, amount, status) VALUES ('$uid','deposit','$amount','pending')");
+  $msg = "STK sent to $phone. Enter PIN. Money will go to 0758966825";
+}
+// INVEST
+if(isset($_POST['do_invest'])){
+  $uid = $_SESSION['user_id']; $pid = $_POST['product_id']; $qty = $_POST['quantity'];
+  $price = $my_products[$pid]['price']; $total = $price * $qty;
+  $user = $conn->query("SELECT * FROM users WHERE id=$uid")->fetch_assoc();
+  if($user['balance'] >= $total){
+    $conn->query("UPDATE users SET balance=balance-$total WHERE id=$uid");
+    $conn->query("INSERT INTO investments (user_id, product_id, quantity, amount) VALUES ($uid,$pid,$qty,$total)");
+    $conn->query("INSERT INTO transactions (user_id, type, amount, status) VALUES ($uid,'invest',$total,'completed')");
+    $msg = "Invested in ".$my_products[$pid]['name']." x $qty Success!";
+  } else { $error="Insufficient balance. Deposit first."; }
+}
+// WITHDRAW
+if(isset($_POST['do_withdraw'])){
+  $uid = $_SESSION['user_id']; $amount = $_POST['amount'];
+  $user = $conn->query("SELECT * FROM users WHERE id=$uid")->fetch_assoc();
+  if($user['balance'] >= $amount){
+    $conn->query("UPDATE users SET balance=balance-$amount WHERE id=$uid");
+    $conn->query("INSERT INTO transactions (user_id, type, amount, status) VALUES ($uid,'withdraw',$amount,'pending')");
+    $msg = "Withdraw $amount requested. Admin will send to your M-Pesa from 0758966825";
+  } else { $error="Insufficient balance"; }
+}
+?>
+<!DOCTYPE html>
+<html><head><meta name="viewport" content="width=device-width, initial-scale=1"><title>Vegetable Invest - 0758966825</title></head>
+<body style="font-family:Arial; max-width:500px; margin:auto; padding:15px;">
+<?php if(isset($msg)) echo "<div style='background:#d4edda;padding:10px;'>$msg</div>"; ?>
+<?php if(isset($error)) echo "<div style='background:#f8d7da;padding:10px;'>$error</div>"; ?>
+
+<?php if($action=='home'){ ?>
+<h2>🥬 Karibu - Vegetable Investment</h2><p>Deposits go to: <b>0758966825</b></p>
+<h3>Register</h3><form method="POST"><input name="name" placeholder="Name" required style="width:100%;padding:10px;margin:5px 0"><input name="phone" placeholder="07..." required style="width:100%;padding:10px;margin:5px 0"><input name="password" type="password" placeholder="Password" required style="width:100%;padding:10px"><button name="do_register" style="width:100%;padding:12px;background:green;color:white;margin-top:5px;">Register</button></form>
+<h3>Login</h3><form method="POST"><input name="phone" placeholder="Phone" required style="width:100%;padding:10px;margin:5px 0"><input name="password" type="password" placeholder="Password" required style="width:100%;padding:10px"><button name="do_login" style="width:100%;padding:12px;background:black;color:white;margin-top:5px;">Login</button></form>
+<?php } ?>
+
+<?php if($action=='dashboard'){
+if(!isset($_SESSION['user_id'])){ header("Location: ?action=home"); exit; }
+$user = $conn->query("SELECT * FROM users WHERE id=".$_SESSION['user_id'])->fetch_assoc();
+?>
+<h2>Hello <?= $user['name'] ?></h2>
+<div style="background:#e8f5e9;padding:15px;border-radius:10px;"><b>Balance: Ksh <?= number_format($user['balance'],2) ?></b><br><small>Deposit Account: 0758966825</small></div>
+
+<h3>💰 Deposit (STK Push to 0758966825)</h3>
+<form method="POST"><input name="phone" placeholder="2547..." value="254<?= substr($user['phone'],-9) ?>" required style="width:60%;padding:8px;"><input name="amount" type="number" placeholder="Amount" required style="width:30%;padding:8px;"><button name="do_deposit" style="padding:8px;background:green;color:white;">Deposit</button></form>
+
+<h3>🌱 Invest - Quantity Available</h3>
+<?php foreach($my_products as $id=>$p){ ?>
+<div style="border:1px solid #ddd;padding:10px;margin:8px 0;border-radius:10px;">
+<b><?= $p['name'] ?></b> - Ksh <?= number_format($p['price']) ?><br><small>Daily <?= $p['profit'] ?> x 30 = <?= $p['profit']*30 ?></small>
+<form method="POST" style="margin-top:5px;">Qty: <input type="hidden" name="product_id" value="<?= $id ?>"><input type="number" name="quantity" value="1" min="1" style="width:50px;"><button name="do_invest">Invest Now</button></form>
+</div>
+<?php } ?>
+
+<h3>📤 Withdraw</h3>
+<form method="POST"><input name="amount" type="number" placeholder="Amount" required style="width:60%;padding:8px;"><button name="do_withdraw" style="padding:8px;background:black;color:white;">Withdraw</button></form>
+<p><a href="?action=home">Logout</a></p>
+<?php } ?>
+</body></html>
